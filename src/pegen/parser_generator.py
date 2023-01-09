@@ -1,5 +1,6 @@
 import contextlib
 from abc import abstractmethod
+from os import PathLike
 from typing import IO, AbstractSet, Dict, Iterator, List, Optional, Set, Text, Tuple
 
 from pegen import sccutils
@@ -72,7 +73,7 @@ class ParserGenerator:
         return self._local_variable_stack[-1]
 
     @abstractmethod
-    def generate(self, filename: str) -> None:
+    def generate(self, filename: PathLike) -> None:
         raise NotImplementedError
 
     @contextlib.contextmanager

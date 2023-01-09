@@ -6,6 +6,7 @@ Search the web for PEG Parsers for reference.
 """
 
 import argparse
+from ast import arg
 import sys
 import time
 import token
@@ -13,30 +14,35 @@ import traceback
 from typing import Tuple
 
 from pegen.build import (
+    Builder,
+    BuilderConfig,
     Grammar,
     Parser,
     ParserGenerator,
+    PythonBuilder,
     Tokenizer,
-    build_python_parser_and_generator,
 )
 from pegen.validator import validate_grammar
 
 
-def generate_python_code(
+def generate_code(
     args: argparse.Namespace,
 ) -> Tuple[Grammar, Parser, Tokenizer, ParserGenerator]:
 
     verbose = args.verbose
     verbose_tokenizer = verbose >= 3
     verbose_parser = verbose == 2 or verbose >= 4
+    builder_type = Builder.BUILDERS_BY_GENERATOR_NAME[args.generator]
     try:
-        grammar, parser, tokenizer, gen = build_python_parser_and_generator(
-            args.grammar_filename,
-            args.output,
-            verbose_tokenizer,
-            verbose_parser,
-            skip_actions=args.skip_actions,
-        )
+        grammar, parser, tokenizer, gen = builder_type(
+            grammar_file=args.grammar_filename,
+            output_file=args.output,
+            config=BuilderConfig(
+                verbose_tokenizer=verbose_tokenizer,
+                verbose_parser=verbose_parser,
+                skip_actions=args.skip_actions,
+            )
+        ).build()
         return grammar, parser, tokenizer, gen
     except Exception as err:
         if args.verbose:
@@ -71,13 +77,19 @@ argparser.add_argument(
     action="store_true",
     help="Suppress code emission for rule actions",
 )
+argparser.add_argument(
+    "--generator",
+    default="python",
+    choices=sorted(Builder.BUILDERS_BY_GENERATOR_NAME.keys()),
+    help="The name of the generator to use"
+)
 
 
 def main() -> None:
     args = argparser.parse_args()
 
     t0 = time.time()
-    grammar, parser, tokenizer, gen = generate_python_code(args)
+    grammar, parser, tokenizer, gen = generate_code(args)
     t1 = time.time()
 
     validate_grammar(grammar)

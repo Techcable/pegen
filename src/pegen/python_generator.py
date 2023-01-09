@@ -1,4 +1,5 @@
 import ast
+from os import PathLike
 import re
 import token
 from typing import IO, Any, Dict, List, Optional, Sequence, Set, Text, Tuple
@@ -236,7 +237,7 @@ class PythonParserGenerator(ParserGenerator, GrammarVisitor):
         )
         self.cleanup_statements: List[str] = []
 
-    def generate(self, filename: str) -> None:
+    def generate(self, filename: PathLike) -> None:
         header = self.grammar.metas.get("header", MODULE_PREFIX)
         if header is not None:
             self.print(header.rstrip("\n").format(filename=filename))

@@ -1,7 +1,8 @@
+from abc import ABCMeta, abstractmethod
 import ast
 import re
 import token
-from typing import IO, Any, Dict, List, Optional, Sequence, Set, Text, Tuple
+from typing import IO, Any, Dict, List, Optional, Sequence, Set, Text, Tuple, TypeAlias
 
 from pegen import grammar
 from pegen.grammar import (
@@ -38,18 +39,60 @@ if __name__ == '__main__':
     (pegen/parser/simple_parser_main {class_name})
 """
 
+class JanetExpr(metaclass=ABCMeta):
+    @abstractmethod
+    def __str__(self) -> str:
+        pass
 
-def escape(s: str) -> str:
-    if isinstance(s, str):
-        assert s.isascii(), f"TODO: Unicode support {s!r}"
-        if s.isprintable() and "\\" not in s and '"' not in s:
-            return f'"{s}"'
+JanetLiteralType: TypeAlias = str | float | int | bool | None
+
+class JanetLiteralExpr(JanetExpr):
+    value: JanetLiteralType
+    def __init__(self, value: JanetLiteralType) -> None:
+        self.value = value
+        if isinstance(value, str):
+            assert value.isascii(), f"TODO: Unicode support {value!r}"
+        elif isinstance(value, (int, float, bool)) or value is None:
+            pass
         else:
-            backticks = "`" * (s.count("`") + 1)
-            return backticks + s + backticks
-    else:
-        raise TypeError(f"Cannot escape {s!r}")
+            raise TypeError(f"Unexpected type: {value!r}")
 
+
+    def __str__(self) -> str:
+        val = self.value
+        if val is None:
+            return "nil"
+        elif isinstance(val, str):
+            if val.isprintable() and "\\" not in val and '"' not in val:
+                return f'"{val}"'
+            else:
+                backticks = "`" * (val.count("`") + 1)
+                return backticks + val + backticks
+        elif isinstance(val, (int, float)):
+            return str(val)
+        elif isinstance(val, bool):
+            return "true" if val else "false"
+        else:
+            raise AssertionError(str(self.value))
+
+
+class JanetList(JanetExpr):
+    values: list[JanetExpr]
+    mutable: bool
+
+    def __init__(self, values: list[JanetExpr], *, mutable: bool = False) -> None:
+        self.values = list(values)
+        assert all(isinstance(e, JanetExpr) for e in values)
+        self.mutable = mutable
+
+    def __str__(self) -> str:
+        prefix = "@[" if self.mutable else "["
+        return prefix + ' '.join(map(str, self.values)) + "]"
+
+
+
+def escape(s: JanetLiteralType) -> JanetLiteralExpr:
+    return JanetLiteralExpr(s)
 
 class InvalidNodeVisitor(GrammarVisitor):
     def visit_NameLeaf(self, node: NameLeaf) -> bool:
@@ -96,7 +139,7 @@ class InvalidNodeVisitor(GrammarVisitor):
         return self.visit(node.node)
 
 
-class PythonCallMakerVisitor(GrammarVisitor):
+class JanetCallMakerVisitor(GrammarVisitor):
     def __init__(self, parser_generator: ParserGenerator):
         self.gen = parser_generator
         self.cache: Dict[Any, Any] = {}
@@ -112,6 +155,7 @@ class PythonCallMakerVisitor(GrammarVisitor):
             return name, f"(self {name})"
         if name in ("NEWLINE", "DEDENT", "INDENT", "ENDMARKER", "ASYNC", "AWAIT"):
             # Avoid using names that can be Python keywords
+            # TODO: Replace with janet keywords?
             return "_" + name.lower(), f"(self expect {escape(name)})"
         return name, f"(self {name})"
 
@@ -122,7 +166,7 @@ class PythonCallMakerVisitor(GrammarVisitor):
                 self.keywords.add(val)
             else:
                 self.soft_keywords.add(val)
-        return "literal", f"(expect {node.value})"
+        return "literal", f"(expect {escape(node.value)})"
 
     def visit_Rhs(self, node: Rhs) -> Tuple[Optional[str], str]:
         if node in self.cache:
@@ -195,11 +239,11 @@ class PythonCallMakerVisitor(GrammarVisitor):
     def visit_Forced(self, node: Forced) -> Tuple[str, str]:
         if isinstance(node.node, Group):
             _, val = self.visit(node.node.rhs)
-            return "forced", f"(self expect_forced {val} ````({node.node.rhs!s})````)"
+            return "forced", f"(self expect_forced {escape(val)} ````({node.node.rhs!s})````)"
         else:
             return (
                 "forced",
-                f"(self expect_forced (self expect {node.node.value}) {escape(node.node.value)})",
+                f"(self expect_forced (self expect {escape(node.node.value)}) {escape(node.node.value)})",
             )
 
 
@@ -219,7 +263,8 @@ class UsedNamesVisitor(ast.NodeVisitor):
         return {node.id}
 
 
-class PythonParserGenerator(ParserGenerator, GrammarVisitor):
+class JanetParserGenerator(ParserGenerator, GrammarVisitor):
+    callmakervisitor: JanetCallMakerVisitor
     def __init__(
         self,
         grammar: grammar.Grammar,
@@ -230,7 +275,7 @@ class PythonParserGenerator(ParserGenerator, GrammarVisitor):
     ):
         tokens.add("SOFT_KEYWORD")
         super().__init__(grammar, tokens, file)
-        self.callmakervisitor: PythonCallMakerVisitor = PythonCallMakerVisitor(self)
+        self.callmakervisitor = JanetCallMakerVisitor(self)
         self.invalidvisitor: InvalidNodeVisitor = InvalidNodeVisitor()
         self.usednamesvisitor: UsedNamesVisitor = UsedNamesVisitor()
         self.unreachable_formatting = unreachable_formatting or "None  # pragma: no cover"
@@ -296,9 +341,10 @@ class PythonParserGenerator(ParserGenerator, GrammarVisitor):
                 decorators.append("@logger")
         else:
             decorators.append("@memoize")
+        decorator_array_repr = f"[{','.join(decorators)}]"
         node_type = node.type or "Any"
         definition_type = "decorated-defn" if decorators else "defn"
-        self.print(f"({definition_type} {decorators!r} {node.name} [self]")
+        self.print(f"({definition_type} {decorator_array_repr} {node.name} [self]")
         with self.indent():
             self.print(f"# {node.name}: {rhs}")
             if node.nullable:
@@ -404,9 +450,10 @@ class PythonParserGenerator(ParserGenerator, GrammarVisitor):
                 action = action.replace("UNREACHABLE", self.unreachable_formatting)
 
             # Extract the names actually used in the action.
-            used = self.usednamesvisitor.visit(ast.parse(action))
-            if has_cut:
-                used.add("cut")
+            if False:
+                used = self.usednamesvisitor.visit(ast.parse(action))
+                if has_cut:
+                    used.add("cut")
 
         with self.local_variable_context():
             if has_cut:
@@ -414,7 +461,7 @@ class PythonParserGenerator(ParserGenerator, GrammarVisitor):
             if is_loop:
                 self.print("(while (and ")
             else:
-                self.print("(if (and ")
+                self.print("(when (and ")
             with self.indent():
                 if has_invalid:
                     self.print("(self :call_invalid_rules)")
@@ -432,4 +479,4 @@ class PythonParserGenerator(ParserGenerator, GrammarVisitor):
             self.print("(:_reset self mark)")
             # Skip remaining alternatives if a cut was reached.
             if has_cut:
-                self.print("(if cut (return None))")
+                self.print("(when cut (return nil))")

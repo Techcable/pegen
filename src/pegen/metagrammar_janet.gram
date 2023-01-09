@@ -1,0 +1,103 @@
+@subheader """\
+(use pegen/grammar)
+"""
+
+start[Grammar]: grammar ENDMARKER { grammar }
+
+grammar[Grammar]:
+    | metas rules { (make-grammar rules metas) }
+    | rules { (make-grammar rules []) }
+
+metas[MetaList]:
+    | meta metas { [meta] + metas }
+    | meta { [meta] }
+
+meta[MetaTuple]:
+    | "@" NAME NEWLINE { [(name :string) nil] }
+    | "@" a=NAME b=NAME NEWLINE { [(a :string) (b :string)] }
+    | "@" NAME STRING NEWLINE { [(name :string) (parse (string :string))] }
+
+rules[RuleList]:
+    | rule rules { [rule ;rules] }
+    | rule { [rule] }
+
+rule[Rule]:
+    | rulename memoflag? ":" alts NEWLINE INDENT more_alts DEDENT {
+          (make-rule ;(slice rulename 0 2) (make-rhs (+ (alts :alts) (more_alts :alts))) :memo opt) }
+    | rulename memoflag? ":" NEWLINE INDENT more_alts DEDENT {
+          (make-rule ;(slice rulename 0 2) more_alts :memo opt) }
+    | rulename memoflag? ":" alts NEWLINE { (make-rule ;(slice rulename 0 2) alts :memo opt) }
+
+rulename[RuleName]:
+    | NAME annotation { [(name :string) annotation] }
+    | NAME { [(name :string) nil] }
+
+# In the future this may return something more complicated
+memoflag[str]:
+    | '(' "memo" ')' { "memo" }
+
+alts[Rhs]:
+    | alt "|" alts { (make-rhs [alt ;(alts :alts)]) }
+    | alt { (make-rhs [alt]) }
+
+more_alts[Rhs]:
+    | "|" alts NEWLINE more_alts { (make-rhs [;(alts :alts) ;(more_alts :alts)]) }
+    | "|" alts NEWLINE { (make-rhs (alts :alts)) }
+
+alt[Alt]:
+    | items '$' action { (make-alt [;items (make-named-item nil (make-name-leaf "ENDMARKER"))] :action action) }
+    | items '$' { (make-alt [;items (make-named-item nil (make-name-leaf "ENDMARKER"))] :action nil) }
+    | items action { (make-alt items :action action) }
+    | items { (make-alt items :action nil) }
+
+items[NamedItemList]:
+    | named_item items { [named_item ;items] }
+    | named_item { [named_item] }
+
+named_item[NamedItem]:
+    | NAME annotation '=' ~ item { (make-named-item (name :string) item annotation) }
+    | NAME '=' ~ item { (make-named-item (name :string) item) }
+    | item { (make-named-item nil item) }
+    | it=forced_atom { (make-named-item nil it) }
+    | it=lookahead { (make-named-item nil it) }
+
+forced_atom[LookaheadOrCut]:
+    | '&''&' ~ atom { (make-forced atom)}
+
+lookahead[LookaheadOrCut]:
+    | '&' ~ atom { (make-positive-lookahead atom) }
+    | '!' ~ atom { (make-negative-lookahead atom) }
+    | '~' { (make-cut)}
+
+item[Item]:
+    | '[' ~ alts ']' { (make-opt alts)}
+    |  atom '?' { (make-opt atom)}
+    |  atom '*' { (make-repeat0 atom)}
+    |  atom '+' { (make-repeat1 atom)}
+    |  sep=atom '.' node=atom '+' { (make-gather sep node)}
+    |  atom {atom}
+
+atom[Plain]:
+    | '(' ~ alts ')' { (make-group alts)}
+    | NAME { (make-name-leaf (name :string)) }
+    | STRING { (make-string-leaf (string :string)) }
+
+# Mini-grammar for the actions and annotations
+
+action[str]: "{" ~ target_atoms "}" { target_atoms }
+annotation[str]: "[" ~ target_atoms "]" { target_atoms }
+
+target_atoms[str]:
+    | target_atom target_atoms { target_atom + " " + target_atoms }
+    | target_atom { target_atom }
+
+target_atom[str]:
+    | "{" ~ atoms=target_atoms? "}" { (string "{" (if atoms atoms "") "}") }
+    | "[" ~ atoms=target_atoms? "]" { (string "[" (if atoms atoms "") "]") }
+    | NAME "*" { (string (name :string) "*") }
+    | NAME { (name :string) }
+    | NUMBER { (number :string) }
+    | STRING { (string :string) }
+    | "?" { "?" }
+    | ":" { ":" }
+    | !"}" !"]" OP { (op :string) }
